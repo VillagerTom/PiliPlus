@@ -26,6 +26,11 @@ jobs:
           channel: stable
           flutter-version-file: pubspec.yaml
 
+      - name: Apply Patches
+        shell: bash
+        run: lib/scripts/pre-build.sh apply-patches --platform windows
+        continue-on-error: true
+
       - name: Add fastforge and Inno Setup
         run: |
           dart pub global activate fastforge
@@ -37,12 +42,8 @@ jobs:
         shell: pwsh
 
       - name: Set and Extract version
-        shell: pwsh
-        run: lib/scripts/build.ps1
-
-      - name: Apply Patch
-        shell: pwsh
-        run: lib/scripts/patch.ps1 windows
+        shell: bash
+        run: lib/scripts/pre-build.sh gen-build-info --ci
 
       - name: Build Windows
         run: |
