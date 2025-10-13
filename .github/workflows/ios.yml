@@ -26,13 +26,11 @@ jobs:
           channel: stable
           flutter-version-file: pubspec.yaml
 
-      - name: Set and Extract version
-        shell: pwsh
-        run: lib/scripts/build.ps1
+      - name: Build info
+        run: lib/scripts/pre-build.sh gen-build-info
 
-      - name: Apply Patch
-        shell: pwsh
-        run: lib/scripts/patch.ps1 iOS
+      - name: Apply Patches
+        run: lib/scripts/pre-build.sh apply-patches --platform ios
         continue-on-error: true
 
       - name: Build iOS
