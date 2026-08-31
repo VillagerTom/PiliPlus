@@ -15,6 +15,102 @@ find_flutter_root() {
     fi
 }
 
+find_pub_cache() {
+    local platform="$1"
+    if [[ "$platform" == "windows" ]]; then
+        echo "${LOCALAPPDATA:-$HOME/AppData/Local}/Pub/Cache"
+    else
+        echo "${PUB_CACHE:-$HOME/.pub-cache}"
+    fi
+}
+
+# Normalize CRLF -> LF so `git apply` works on files that came from a Windows checkout.
+normalize_patch() {
+    local file="$1"
+    if command -v dos2unix >/dev/null 2>&1; then
+        dos2unix -q "$file" 2>/dev/null || true
+    else
+        sed -i 's/\r$//' "$file" 2>/dev/null || true
+    fi
+}
+
+# Apply material_ui / cupertino_ui pub-package patches (mirrors upstream patch.ps1).
+# material_ui is re-downloaded clean via `flutter pub get`; cupertino_ui is patched in place.
+# No-op when the platform has neither material nor cupertino patches.
+apply_pub_patches() {
+    local platform="$1"
+    local config="$2"
+    local patch_dir="$3"
+    local project_root="$4"
+
+    local material_keys cupertino_keys
+    material_keys=$(jq -r ".platform.\"$platform\".material_patches // [] | .[]" "$config" | tr '\n' ' ')
+    cupertino_keys=$(jq -r ".platform.\"$platform\".cupertino_patches // [] | .[]" "$config" | tr '\n' ' ')
+
+    local has_material has_cupertino
+    [[ -n "${material_keys// }" ]] && has_material=1 || has_material=0
+    [[ -n "${cupertino_keys// }" ]] && has_cupertino=1 || has_cupertino=0
+    if [[ "$has_material" -eq 0 && "$has_cupertino" -eq 0 ]]; then
+        return 0
+    fi
+
+    local material_files=() cupertino_files=() key
+    for key in $material_keys; do
+        material_files+=("$(jq -r ".patches.\"$key\".file" "$config")")
+    done
+    for key in $cupertino_keys; do
+        cupertino_files+=("$(jq -r ".patches.\"$key\".file" "$config")")
+    done
+
+    local pub_cache pubcache_hosted
+    pub_cache=$(find_pub_cache "$platform")
+    pubcache_hosted="$pub_cache/hosted/pub.dev"
+
+    if [[ "$has_material" -eq 1 ]]; then
+        local mat_dir f full
+        mat_dir=$(find "$pubcache_hosted" -maxdepth 1 -type d -name 'material_ui-*' 2>/dev/null | tail -n1 || true)
+        if [[ -n "$mat_dir" ]]; then
+            rm -rf "$mat_dir"
+            echo "Removed cached material_ui: $mat_dir"
+        fi
+        ( cd "$project_root" && flutter pub get >/dev/null 2>&1 ) || true
+        mat_dir=$(find "$pubcache_hosted" -maxdepth 1 -type d -name 'material_ui-*' 2>/dev/null | tail -n1 || true)
+        if [[ -z "$mat_dir" ]]; then
+            echo "Error: material_ui package not found in pub cache" >&2
+            return 1
+        fi
+        for f in "${material_files[@]}"; do
+            full="$patch_dir/$f"
+            [[ -f "$full" ]] && normalize_patch "$full"
+            if ( cd "$mat_dir" && git apply "$full" ); then
+                echo "$f applied to material_ui"
+            else
+                echo "Error: failed to apply $f to material_ui" >&2
+                return 1
+            fi
+        done
+    fi
+
+    if [[ "$has_cupertino" -eq 1 ]]; then
+        local cup_dir f full
+        cup_dir=$(find "$pubcache_hosted" -maxdepth 1 -type d -name 'cupertino_ui-*' 2>/dev/null | tail -n1 || true)
+        if [[ -z "$cup_dir" ]]; then
+            echo "Error: cupertino_ui package not found in pub cache" >&2
+            return 1
+        fi
+        for f in "${cupertino_files[@]}"; do
+            full="$patch_dir/$f"
+            [[ -f "$full" ]] && normalize_patch "$full"
+            if ( cd "$cup_dir" && git apply "$full" ); then
+                echo "$f applied to cupertino_ui"
+            else
+                echo "Error: failed to apply $f to cupertino_ui" >&2
+                return 1
+            fi
+        done
+    fi
+}
+
 apply_patches() {
     local platform=""
     while [[ $# -gt 0 ]]; do
@@ -132,6 +228,13 @@ apply_patches() {
         flutter --version 2>/dev/null || true
     fi
 
+    # material_ui / cupertino_ui pub-package patches
+    apply_pub_patches "$platform" "$config" "$patch_dir" "$PROJECT_ROOT"
+
+    local has_mat has_cup
+    has_mat=$(jq -r --arg p "$platform" '.platform[$p].material_patches // [] | length' "$config")
+    has_cup=$(jq -r --arg p "$platform" '.platform[$p].cupertino_patches // [] | length' "$config")
+
     local project_patches_json="[]"
     if [[ ${#applied_project_patches[@]} -gt 0 ]]; then
         project_patches_json=$(printf '%s\n' "${applied_project_patches[@]}" | jq -R . | jq -sc .)
@@ -145,7 +248,9 @@ apply_patches() {
         --arg engine_version "$saved_engine_version" \
         --argjson snapshot_time "$(date +%s)" \
         --argjson project_patches "$project_patches_json" \
-        '{status: $status, platform: $platform, patches_hash: $patches_hash, flutter_head: $flutter_head, engine_version: $engine_version, snapshot_time: $snapshot_time, project_patches: $project_patches}' \
+        --argjson material_patched "$([[ "$has_mat" -gt 0 ]] && echo true || echo false)" \
+        --argjson cupertino_patched "$([[ "$has_cup" -gt 0 ]] && echo true || echo false)" \
+        '{status: $status, platform: $platform, patches_hash: $patches_hash, flutter_head: $flutter_head, engine_version: $engine_version, snapshot_time: $snapshot_time, project_patches: $project_patches, material_patched: $material_patched, cupertino_patched: $cupertino_patched}' \
         > "$state_file"
 }
 

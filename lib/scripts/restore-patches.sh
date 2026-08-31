@@ -56,5 +56,34 @@ while IFS= read -r file; do
     fi
 done < <(jq -r '.project_patches[] // empty' "$state_file")
 
+# A patched material_ui/cupertino_ui pub package in cache is no longer pristine;
+# delete the cached copies so the next apply re-downloads clean ones via pub get.
+restore_pub_patches() {
+    local platform="$1"
+    local pub_cache
+    if [[ "$platform" == "windows" ]]; then
+        pub_cache="${LOCALAPPDATA:-$HOME/AppData/Local}/Pub/Cache"
+    else
+        pub_cache="${PUB_CACHE:-$HOME/.pub-cache}"
+    fi
+    local hosted="$pub_cache/hosted/pub.dev"
+    local dir
+    for name in material_ui cupertino_ui; do
+        dir=$(find "$hosted" -maxdepth 1 -type d -name "$name-*" 2>/dev/null | tail -n1 || true)
+        if [[ -n "$dir" ]]; then
+            rm -rf "$dir"
+            echo "Removed cached $name: $dir"
+        fi
+    done
+}
+
+platform=$(jq -r '.platform // ""' "$state_file")
+material_patched=$(jq -r '.material_patched // false' "$state_file")
+cupertino_patched=$(jq -r '.cupertino_patched // false' "$state_file")
+
+if [[ -n "$platform" && ( "$material_patched" == "true" || "$cupertino_patched" == "true" ) ]]; then
+    restore_pub_patches "$platform"
+fi
+
 rm -f "$state_file" "$PROJECT_ROOT/pili_release.json"
 echo "pili_release.json removed"
