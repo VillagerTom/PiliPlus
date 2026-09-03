@@ -731,7 +731,13 @@ Future<List<String>> applyPubPatches(
       final file = matrix.fileFor(id);
       final abs = '$projectRoot/lib/scripts/$file';
       await normalizePatch(File(abs));
-final ar = await _r.run(pkgDir.path, ['git', 'apply', abs]);
+// In SDK-copy mode the pub-cache lives inside the copy's .git tree.
+      // GIT_CEILING_DIRECTORIES tells git not to ascend past the pub-cache
+      // root when looking for a repo, so patch paths resolve relative to cwd
+      // (the package dir) instead of the SDK copy root.
+      final ar = await _r.run(pkgDir.path, ['git', 'apply', abs], environment: {
+        'GIT_CEILING_DIRECTORIES': cd.root,
+      });
       if (ar.exitCode != 0) {
         _r.error('failed to apply $file -> $pkg\n${ar.stderr}');
       }
