@@ -81,6 +81,24 @@ class Runner {
     exit(1);
   }
 
+  /// Env for subprocesses that run with a custom `PUB_CACHE`: git checkouts of
+  /// deep package trees (e.g. flutter_inappwebview) blow past the 260-char
+  /// MAX_PATH under long isolated pub-cache paths (Windows) unless
+  /// `core.longpaths` is set. Injected per-process via GIT_CONFIG_* so the
+  /// user's global git config and registry flags stay untouched. Harmless on
+  /// other platforms where the limit does not apply.
+  Map<String, String> _flutterEnv(Map<String, String>? environment) {
+    if (environment == null || !environment.containsKey('PUB_CACHE')) {
+      return environment ?? const {};
+    }
+    return {
+      ...environment,
+      'GIT_CONFIG_COUNT': '1',
+      'GIT_CONFIG_KEY_0': 'core.longpaths',
+      'GIT_CONFIG_VALUE_0': 'true',
+    };
+  }
+
   Future<ProcessResult> run(
     String cwd,
     List<String> cmd, {
@@ -90,7 +108,7 @@ class Runner {
       cmd.first,
       cmd.sublist(1),
       workingDirectory: cwd,
-      environment: environment,
+      environment: _flutterEnv(environment),
       stdoutEncoding: utf8,
       stderrEncoding: utf8,
     );
@@ -105,7 +123,7 @@ class Runner {
       cmd.first,
       cmd.sublist(1),
       workingDirectory: cwd,
-      environment: environment,
+      environment: _flutterEnv(environment),
       stdoutEncoding: utf8,
       stderrEncoding: utf8,
     );
