@@ -938,13 +938,70 @@ String? _resolveBaseSdk() {
   return '$fvmHome/versions/$pinned';
 }
 
-/// Recursively delete a directory tree using Dart's FileSystemEntity, replacing
-/// the platform-specific `rm -rf` (absent on default Windows shells).
+/// Recursively delete a directory tree.  Replaces the platform-specific
+/// `rm -rf` (absent on default Windows shells).  On Windows, symlinks are
+/// cleared before their parent directories (symlink targets may live outside
+/// the tree), and very deep paths (e.g. pub-cache git checkouts of
+/// flutter_inappwebview) are handed to `rmdir /s /q` to bypass Dart's MAX_PATH
+/// limit; on non-Windows the walk is sufficient.
 void _rmTree(String path) {
   final dir = Directory(path);
   if (!dir.existsSync()) return;
+
+  if (Platform.isWindows) {
+    // rmdir /s /q on Windows 10 1607+ respects longPathAware and can delete
+    // both symlinks and deep paths that Dart's Win32 wrappers choke on.
+    // Normalize to backslashes — cmd /c rmdir rejects mixed separators.
+    final norm = path.replaceAll('/', '\\');
+    final r = Process.runSync('cmd', [
+      '/c',
+      'rmdir',
+      '/s',
+      '/q',
+      norm,
+    ]);
+    if (!dir.existsSync()) return;
+    _r.error('failed to remove $path (rmdir exit ${r.exitCode}): ${r.stderr}');
+  }
+
   try {
-    dir.deleteSync(recursive: true);
+    final errs = <FileSystemException>[];
+    void walk(String root) {
+      final entities = <FileSystemEntity>[];
+      try {
+        entities
+            .addAll(Directory(root).listSync(followLinks: false, recursive: false));
+      } catch (_) {
+        return;
+      }
+      for (final e in entities) {
+        if (FileSystemEntity.typeSync(e.path, followLinks: false) ==
+            FileSystemEntityType.link) {
+          try {
+            Link(e.path).deleteSync();
+          } catch (err) {
+            if (err is FileSystemException) errs.add(err);
+          }
+        } else if (FileSystemEntity.isDirectorySync(e.path)) {
+          walk(e.path);
+          try {
+            Directory(e.path).deleteSync();
+          } catch (err) {
+            if (err is FileSystemException) errs.add(err);
+          }
+        } else {
+          try {
+            File(e.path).deleteSync();
+          } catch (err) {
+            if (err is FileSystemException) errs.add(err);
+          }
+        }
+      }
+    }
+
+    walk(path);
+    if (dir.existsSync()) dir.deleteSync();
+    if (errs.isNotEmpty) throw errs.first;
   } catch (e) {
     _r.error('failed to remove $path: $e');
   }
