@@ -279,11 +279,28 @@ class PubCache {
 
   Map<String, String> env() => {'PUB_CACHE': root};
 
+  /// Host of the single registry `flutter pub get` will actually fetch from:
+  /// the `PUB_HOSTED_URL` mirror if set, else pub's default `pub.dev`. The
+  /// isolated cache is mirror-only for this registry so we never stage copies
+  /// from a source pub will not consult (which would also blur the
+  /// double-registry lookup in [findPackage]).
+  static String activeRegistry() {
+    final raw = Platform.environment['PUB_HOSTED_URL'];
+    if (raw == null || raw.trim().isEmpty) return 'pub.dev';
+    try {
+      return Uri.parse(raw.trim()).host;
+    } on FormatException {
+      return 'pub.dev';
+    }
+  }
+
   /// Prepare a disposable per-copy pub cache rooted at [isolatedRoot] that
   /// mirrors the global shared cache with zero-copy symlinks: every global
   /// hosted package becomes a symlink here, so `flutter pub get` resolves
-  /// offline without re-downloading. Patched packages are re-fetched as real
-  /// directories into this cache by [applyPubPatches] (which deletes the
+  /// offline without re-downloading. Only the registry named by [activeRegistry]
+  /// (the one `pub get` will read) is mirrored, keeping the isolated cache
+  /// free of copies from other registries. Patched packages are re-fetched as
+  /// real directories into this cache by [applyPubPatches] (which deletes the
   /// symlink first, leaving the global package untouched).
   static PubCache prepareIsolated(
     String platform,
@@ -291,8 +308,11 @@ class PubCache {
   ) {
     final global = PubCache.global(platform);
     final iso = PubCache._(isolatedRoot);
+    final want = activeRegistry();
     for (final reg in global._registries()) {
       final regName = reg.path.split(Platform.pathSeparator).last;
+      // Only stage the registry that pub will actually consult for downloads.
+      if (regName != want) continue;
       final isoReg = Directory('$isolatedRoot/hosted/$regName')
         ..createSync(recursive: true);
       for (final d in reg.listSync(followLinks: false).whereType<Directory>()) {
@@ -307,6 +327,7 @@ class PubCache {
         }
       }
       }
+      break;
     }
     return iso;
   }
