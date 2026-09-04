@@ -323,9 +323,28 @@ class PubCache {
         // only what is missing.
         if (FileSystemEntity.typeSync(linkPath, followLinks: false) ==
             FileSystemEntityType.notFound) {
-          Link(linkPath).createSync(d.path);
+          try {
+            Link(linkPath).createSync(d.path);
+          } on FileSystemException catch (e) {
+            // The mimicked cache is a hard requirement for sdk-copy (its
+            // whole point is zero-copy reuse of the shared cache), so fail
+            // fast with a fixable message instead of silently degrading to a
+            // network re-download. $e already carries the concrete cause:
+            // ERROR_PRIVILEGE_NOT_HELD (1314) when the user lacks symlink
+            // privilege, ERROR_ALREADY_EXISTS (183) when a stale entry occupies
+            // the path, ERROR_PATH_NOT_FOUND (3) when the source vanished, etc.
+            // Only the privilege case gets the Developer Mode hint; the rest
+            // keep the raw OS error rather than a misleading single-cause hint.
+            if (Platform.isWindows && e.osError?.errorCode == 1314) {
+              _r.error(
+                'sdk-copy needs symlinks; on Windows enable Developer Mode '
+                '(Settings > For developers) or run as Administrator.\n$e',
+              );
+            }
+            _r.error('sdk-copy cannot create a symbolic link in the isolated '
+                'pub cache:\n$e');
+          }
         }
-      }
       }
       break;
     }
