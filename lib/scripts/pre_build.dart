@@ -1169,75 +1169,6 @@ Future<String?> _resolveBaseSdk() async {
   return null;
 }
 
-/// Recursively delete a directory tree.  Replaces the platform-specific
-/// `rm -rf` (absent on default Windows shells).  On Windows, symlinks are
-/// cleared before their parent directories (symlink targets may live outside
-/// the tree), and very deep paths (e.g. pub-cache git checkouts of
-/// flutter_inappwebview) are handed to `rmdir /s /q` to bypass Dart's MAX_PATH
-/// limit; on non-Windows the walk is sufficient.
-void _rmTree(String path) {
-  final dir = Directory(path);
-  if (!dir.existsSync()) return;
-
-  if (Platform.isWindows) {
-    // rmdir /s /q on Windows 10 1607+ respects longPathAware and can delete
-    // both symlinks and deep paths that Dart's Win32 wrappers choke on.
-    // Normalize to backslashes — cmd /c rmdir rejects mixed separators.
-    final norm = path.replaceAll('/', '\\');
-    final r = Process.runSync('cmd', [
-      '/c',
-      'rmdir',
-      '/s',
-      '/q',
-      norm,
-    ]);
-    if (!dir.existsSync()) return;
-    _r.error('failed to remove $path (rmdir exit ${r.exitCode}): ${r.stderr}');
-  }
-
-  try {
-    final errs = <FileSystemException>[];
-    void walk(String root) {
-      final entities = <FileSystemEntity>[];
-      try {
-        entities
-            .addAll(Directory(root).listSync(followLinks: false, recursive: false));
-      } catch (_) {
-        return;
-      }
-      for (final e in entities) {
-        if (FileSystemEntity.typeSync(e.path, followLinks: false) ==
-            FileSystemEntityType.link) {
-          try {
-            Link(e.path).deleteSync();
-          } catch (err) {
-            if (err is FileSystemException) errs.add(err);
-          }
-        } else if (FileSystemEntity.isDirectorySync(e.path)) {
-          walk(e.path);
-          try {
-            Directory(e.path).deleteSync();
-          } catch (err) {
-            if (err is FileSystemException) errs.add(err);
-          }
-        } else {
-          try {
-            File(e.path).deleteSync();
-          } catch (err) {
-            if (err is FileSystemException) errs.add(err);
-          }
-        }
-      }
-    }
-
-    walk(path);
-    if (dir.existsSync()) dir.deleteSync();
-    if (errs.isNotEmpty) throw errs.first;
-  } catch (e) {
-    _r.error('failed to remove $path: $e');
-  }
-}
-
 /// Recursively copy `src` into `dest` with Dart's FileSystemEntity, skipping
 /// the `bin/cache` subtree (rebuilt on first run). Replaces the
 /// platform-specific `rsync -a --exclude bin/cache`, keeping sdk-copy usable
@@ -1307,7 +1238,16 @@ Future<String?> _prepareSdkCopy(String platform, bool force) async {
   // patches, no fvm switch).
   if (force || !Directory(dest).existsSync() || !marker.existsSync()) {
     _r.info('Creating SDK copy: $dest (from $src)');
-    if (Directory(dest).existsSync()) _rmTree(dest);
+    if (Directory(dest).existsSync()) {
+      // Reuse `fvm remove` (which also purges any FVM cache index entries) as
+      // the deletion primitive instead of hand-rolling a cross-platform tree
+      // wipe; it resolves copy versions under versions/ exactly like real SDKs.
+      final rr = await _r.run(projectRoot, ['fvm', 'remove', copyVersion]);
+      if (Directory(dest).existsSync()) {
+        _r.error(
+            'failed to remove stale SDK copy $dest (fvm remove exit ${rr.exitCode}): ${rr.stderr}');
+      }
+    }
     _copyTree(Directory(src), Directory(dest));
     _r.info('SDK copied: $dest');
   }
